@@ -8,7 +8,7 @@ export interface IHTMLConfig {
 
 declare global {
   interface EnhanceLayoutArgument {
-    event: HttpEvent<{ html: IHTMLConfig }>
+    event: HttpEvent<{ html: IHTMLConfig & HTMLConfig }>
   }
 }
 

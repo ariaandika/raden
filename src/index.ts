@@ -1,9 +1,11 @@
 /// <reference types="./types/index.d.ts"/>
+import "./register"
 import type { Server, TLSServeOptions } from "bun";
 import { createEvent, HttpResponse } from "./http/Http";
 import { existsSync } from "fs";
 
 const FgRed = "\x1b[31m"
+const t = new Bun.Transpiler({ loader: 'ts', target: 'browser' })
 
 // MAIN
 export class Raden<Locals extends {[x: string]: any } = {}> {
@@ -71,9 +73,15 @@ export class Raden<Locals extends {[x: string]: any } = {}> {
 
     try {
       if (Raden.staticExist) {
+        // TODO: cache static file on production
         const file = Bun.file(Raden.staticAssets + event.req.path);
         if (await file.exists()) {
           return new Response(file)
+        } else if (event.req.path.startsWith('/dist')) {
+          const file = Bun.file(Raden.staticAssets + event.req.path.replace('/dist','').replace('.js','.ts'))
+          if (await file.exists()) {
+            return new Response(t.transformSync(await file.arrayBuffer()))
+          }
         }
       }
       const resultEvent = await this.runApp(event)
