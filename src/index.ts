@@ -88,8 +88,10 @@ export class Raden<Locals extends {[x: string]: any } = {}> {
       if (!resultEvent.config.handleFound) {
         return resultEvent.res.notFound()
       }
+      console.log('Return:',typeof resultEvent.res.body)
       return resultEvent.res.build()
     } catch (err: any) {
+      console.log('Throw:',typeof err)
       if (err instanceof Response) {
         return err
       } else if (err instanceof HttpResponse) {

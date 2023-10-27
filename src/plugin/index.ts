@@ -1,5 +1,3 @@
-
-
 import { Html, HTMLConfig, ModuleConfig } from "@deuzo/enhance-server"
 
 export interface IHTMLConfig {
@@ -37,4 +35,14 @@ export function html(layout?: HTMLConfig['layout']) {
 }
 
 
+const t = new Bun.Transpiler({ loader: 'ts' })
 
+export function serveFile(urlpath: string, file: string) {
+  return async (event: HttpEvent) => {
+    console.log('oof', event.req.url.pathname, urlpath)
+    if (event.req.url.pathname === urlpath) {
+      event.res.headers.set('content-type', Bun.file(file).type)
+      throw await t.transform(await Bun.file(file).arrayBuffer())
+    }
+  }
+}
