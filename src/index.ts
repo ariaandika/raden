@@ -1,237 +1,240 @@
 /// <reference types="./types/index.d.ts"/>
 import "./register"
 import type { Server, TLSServeOptions } from "bun";
-import { createEvent, HttpResponse } from "./http/Http";
-import { existsSync } from "fs";
+import { createEvent } from "./http/Http";
 
 const FgRed = "\x1b[31m"
-const t = new Bun.Transpiler({ loader: 'ts', target: 'browser' })
 
-// MAIN
-export class Raden<Locals extends {[x: string]: any } = {}> {
+type ParseParam<T,U = never> = 
+  T extends `${string}:${infer R}/${infer S}` ? ParseParam<S,U | R> : 
+  T extends `${string}:${infer R}/` ? U | R :
+  T extends `${string}:${infer R}` ? U | R :
+U;
 
-  static staticAssets = 'static'
-  static useMethodVerb = 'use' as const
-  static server = undefined as any as Server
+export interface Raden<T extends Record<string,any> = {}> {
+  prefix: string
+  middlewares: CallableFunction[]
+  plugins: CallableFunction[]
+  routes: { handles: CallableFunction[], route: string }[]
 
-  private static staticExist = existsSync('static');
+  get: typeof get
+  post: ReturnType<typeof methodFactory>
+  put: ReturnType<typeof methodFactory>
+  patch: ReturnType<typeof methodFactory>
+  delete: ReturnType<typeof methodFactory>
 
-  routes = [] as {
-    method: string
-    route: string
-    handle: CallableFunction | Raden<any>,
-  }[]
+  use: typeof use
+  middleware: typeof middleware
+  listen: typeof listen
+}
 
-  decors = {} as any
+// warning to self, routes as array because dynamic routes
 
-  constructor( public prefixRoute = '' ) { }
-
-  get<Param extends string>(route: Param, handle: (event: HttpEvent<Locals & { params: Record<ParseParam<Param>,string> }>) => any) {
-    this.routes.push({
-      method: 'get',
-      route: Util.fixUrl(this.prefixRoute + route),
-      handle
-    })
-
-    return this
+export type RadenMaster = typeof Raden
+export const Raden = function(prefix = ''): Raden {
+  return {
+    routes: [],
+    middlewares: [],
+    plugins: [],
+    prefix,
+    use,
+    get,
+    middleware,
+    post: methodFactory('POST'),
+    put: methodFactory('PUT'),
+    patch: methodFactory('PATCH'),
+    delete: methodFactory('DELETE'),
+    listen,
   }
-  
-  post = methodFactory<Locals>('post')
-  put = methodFactory<Locals>('put')
-  patch = methodFactory<Locals>('patch')
-  delete = methodFactory<Locals>('delete')
+}
 
-  use<Prop extends string,SetLocals>(key: Prop, value: SetLocals): Raden<Locals & { [x in Prop]: SetLocals }>;
-  use<SetLocals>(handle: ((e: HttpEvent<Locals>) => SetLocals ) | Raden<any>): Raden<Locals & SetLocals>;
-  use(handle: any, val?: any) {
+Raden.useMethodVerb = 'use'
+Raden.server = undefined as any as Server
+Raden.routes = {}
 
-    if (typeof handle == 'string' && val) {
-      this.decors[handle] = val
-      return this as any
-    }
-
-    this.routes.push({ method: Raden.useMethodVerb, route: '', handle })
+function use<Locals extends Record<string,any>, SetLocals>(this: Raden<Locals>, handle: ((e: HttpEvent<Locals>) => SetLocals) | Raden<any>): Raden<Locals & SetLocals> {
+  if (typeof handle == 'function') {
+    this.plugins.push(handle)
     return this as any
   }
 
-  listen(opt?: Omit<TLSServeOptions & { port?: number },'fetch'>) {
-    const server = Bun.serve({
-      fetch: async (request) => await this.main(createEvent<Locals>(request)),
-      hostname: opt?.hostname,
-      port: opt?.port,
-      tls: opt?.tls
-    });
-    Raden.server = server;
-    return this;
-  }
+  this.middlewares.push(...handle.middlewares)
+  this.routes.push(...handle.routes)
 
-
-  // only ran by root App
-  async main(event: HttpEvent<Locals>) {
-
-    Object.assign(event.locals, this.decors)
-
-    try {
-      if (Raden.staticExist) {
-        // TODO: cache static file on production
-        const file = Bun.file(Raden.staticAssets + event.req.path);
-        if (await file.exists()) {
-          return new Response(file)
-        } else if (event.req.path.startsWith('/dist')) {
-          const file = Bun.file(Raden.staticAssets + event.req.path.replace('/dist','').replace('.js','.ts'))
-          if (await file.exists()) {
-            return new Response(t.transformSync(await file.arrayBuffer()))
-          }
-        }
-      }
-      const resultEvent = await this.runApp(event)
-      if (!resultEvent.config.handleFound) {
-        return resultEvent.res.notFound()
-      }
-      console.log('Return:',typeof resultEvent.res.body)
-      return resultEvent.res.build()
-    } catch (err: any) {
-      console.log('Throw:',typeof err)
-      if (err instanceof Response) {
-        return err
-      } else if (err instanceof HttpResponse) {
-        return err.build()
-      } else if (typeof err == 'string' || typeof err == 'number') {
-        event.res.body = err
-        return event.res.build()
-      } else if (err == undefined || err == null) {
-        return event.res.build()
-      } else {
-        console.log(FgRed + '%s\x1b[0m', "[ERROR]");
-        console.error(err)
-        console.log(FgRed + '%s\x1b[0m', "[/ERROR]");
-        return new Response('500 Internal Server Error',{ status: 500, headers: {"content-type": "text/html"} })
-      }
-    }
-  }
-
-  // will be run if `use(App)` and initial App
-  async runApp(event: HttpEvent<Locals>, parentUseHandles = [] as CallableFunction[]): Promise<HttpEvent<Locals>> {
-    const useHandles = [] as CallableFunction[]
-
-    for (let i = 0,len = this.routes.length; i < len; i++) {
-      const { route, method, handle } = this.routes[i];
-      
-      if (method === Raden.useMethodVerb) {
-        if (typeof handle === 'function') {
-          useHandles.push(handle)
-          continue
-
-        } else {
-          if (handle.prefixRoute !== '' && !event.req.path.startsWith( handle.prefixRoute )) continue
-
-          useHandles.push(...parentUseHandles)
-
-          const resultEvent = await handle.runApp(event as any,useHandles)
-          if (resultEvent.config.handleFound) {
-            return resultEvent as any
-          }
-          continue
-
-        }
-      }
-
-      let params: any
-
-      if (method.toLowerCase() !== event.req.request.method.toLowerCase()) continue;
-      if ( !(params = Util.matchRoute(event.req.path, route )) ) continue;
-      if (handle instanceof Raden) continue;
-
-      // @ts-ignore
-      event.locals.params = params
-
-      if (event.req.request.method.toLowerCase() == 'post') {
-        if (event.req.headers.get('Content-Type')) {
-          try {
-            const body = event.req.headers.get('Content-Type') == 'application/json' ?
-              await event.req.request.json() :
-              Object.fromEntries(await event.req.request.formData())
-
-            event.req.body = body
-          } catch (error) {
-            event.res.status = 400
-            throw undefined
-          }
-        } else {
-          event.res.status = 400
-          throw undefined
-        }
-      }
-
-      for (let i = 0, len = parentUseHandles.length; i < len; i++) {
-        Object.assign(event.locals, await parentUseHandles[i](event))
-      }
-
-      for (let i = 0, len = useHandles.length; i < len; i++) {
-        Object.assign(event.locals, await useHandles[i](event))
-      }
-      
-      /** MAIN HANDLER */{
-        const result = await handle(event)
-        if (result === undefined || result === null) { } else {
-          event.res.body = result
-        }
-      }
-
-      for (let i = 0, len = event.config.transforms.length; i < len; i++) {
-        const result = await event.config.transforms[i](event.res.body,event)
-        if (result === undefined || result === null) { } else {
-          event.res.body = result
-        }
-      }
-
-      event.config.handleFound = true
-      return event
-    }
-
-    return event
-  }
-
-  inspect() {
-    console.log(this.routes.map(e=>e.route))
-  }
+  return this as any
 }
 
+function middleware<Locals extends Record<string,any>, SetLocals>(this: Raden<Locals>, handle: (e: HttpEvent<Locals>) => SetLocals): Raden<Locals & SetLocals> {
+  this.middlewares.push(handle)
+  this.plugins.push(handle)
+  return this as any
+}
 
-function methodFactory<T extends {[x:string]:any}>(method: string) {
-  return function<Param extends string>(this: Raden<T>, route: Param, handle: PostHandle<T,Param>) {
-    this.routes.push({ method, route: Util.fixUrl(this.prefixRoute + route), handle })
+function get<
+    Locals extends Record<string,any>, 
+    Param extends string
+  >(
+    this: Raden<Locals>, 
+    route: Param, 
+    ...handles: ((event: HttpEvent<Locals & { params: Record<ParseParam<Param>,string> }>) => any)[]) 
+{
+  this.routes.push({
+    route: 'GET:' + Util.fixUrl(this.prefix + route),
+    handles: this.plugins.concat(handles) as any,
+  })
+  return this
+}
+
+function methodFactory(method: string) {
+  return function<Locals extends Record<string,any>,Param extends string> (
+    this: Raden<Locals>, 
+    route: Param, 
+    ...handles: ((event: HttpEvent<Locals & { params: Record<ParseParam<Param>,string> }>) => any)[]) {
+    this.routes.push({
+      route: method + ':' + Util.fixUrl(this.prefix + route),
+      handles: this.plugins.concat(handles) as any,
+    })
     return this
   }
 }
 
+function listen<Locals extends Record<string,any>>(this: Raden<Locals>, opt?:Omit<TLSServeOptions,'fetch'>) {
+  const serve = async (req: Request) => await main(this, createEvent(req))
+  Raden.server = Bun.serve({...opt, fetch: serve})
+  return this;
+}
+
+
+  // only ran by root App
+async function main<Locals extends Record<string,any>>(raden: Raden<Locals>, event: HttpEvent<Locals>) {
+  try {
+    await runApp(raden, event)
+    if (!event.config.handleFound) {
+      return event.res.notFound()
+    }
+
+    return event.res.build()
+
+  } catch (err: any) {
+    console.log(FgRed + '%s\x1b[0m', "[ERROR]");
+    console.error(err)
+    console.log(FgRed + '%s\x1b[0m', "[/ERROR]");
+    return new Response('500 Internal Server Error',{ status: 500, headers: {"content-type": "text/html"} })
+  }
+}
+
+// will be run if `use(App)` and initial App
+async function runApp<Locals extends Record<string,any>>(raden: Raden<Locals>, event: HttpEvent<Locals>) {
+
+  const params = {} as any
+
+  const route = raden.routes.find(e => Util.matchRoute(event, e.route, params))
+
+  if (!route) {
+    // @ts-ignore
+    event.locals.__notfound = true
+    for (let i = 0, len = raden.middlewares.length; i < len; i++) {
+      const elem = await raden.middlewares[i](event)
+
+      if (event.config.handleFound) {
+        event.res.body = elem
+
+      } else {
+        Object.assign(event.locals, elem)
+      }
+
+      if (event.config.handleFound) { break }
+    }
+    return
+  }
+
+  // @ts-ignore
+  event.locals.params = params
+
+  await parseRequestBody(event)
+
+  for (let i = 0, len = route.handles.length; i < len; i++) {
+    const elem = await route.handles[i](event)
+
+    if (i == len - 1 || event.config.handleFound) {
+      if (elem === null || elem === undefined) { } else {
+        event.res.body = elem
+      }
+
+    } else {
+      Object.assign(event.locals, elem)
+    }
+
+    if (event.config.handleFound) { break }
+  }
+
+  for (let i = 0, len = event.config.transforms.length; i < len; i++) {
+    const result = await event.config.transforms[i](event.res.body,event)
+    if (result === undefined || result === null) { } else {
+      event.res.body = result
+    }
+  }
+
+  event.config.handleFound = true
+}
+
+
+async function parseRequestBody(event: HttpEvent) {
+  if (event.req.request.method == 'GET') return
+
+  if (!event.req.headers.get('Content-Type')) {
+    event.res.status = 400
+    throw undefined
+  }
+
+  event.req.body = event.req.headers.get('Content-Type') == 'application/json' ? 
+    await event.req.request.json() : 
+    Object.fromEntries((await event.req.request.formData()).entries());
+}
+
+
+
+
 
 export class Util {
-  static matchRoute(requestUrl: string, targetUrl: string) {
-    if (targetUrl == '*' || targetUrl == '/*') return {}
+  static matchRoute(event: HttpEvent, targetUrl: string, outParams?: Record<string,any>) {
+    const requestUrl = event.req.path
+    const requestMethod = event.req.request.method
 
-    if (!targetUrl.match(/[:\*]/)) return requestUrl === targetUrl ? {}  : false
+    if (targetUrl.startsWith(requestMethod)) {
+      targetUrl = targetUrl.slice(requestMethod.length + 1)
+    } else {
+      return false
+    }
+
+    if (targetUrl == requestUrl) {
+
+    } else {
+      return false
+    }
+
+    if (targetUrl == '*') return true
 
     const requrl = requestUrl.split('/').slice(1)
     const match = targetUrl.split('/').slice(1)
 
+    // TODO: add support for wildcard routes
     if (requrl.length !== match.length) return false
-
-    const params = {} as any
 
     for (let i = 0, len = requrl.length; i < len; i++) {
       const req = requrl[i]
       const url = match[i]
 
       if (url.startsWith(':')) {
-        params[url.slice(1)] = req
+        if (outParams)
+          outParams[url.slice(1)] = req
         continue
       }
-      
+
       if (req !== url) return false
     }
 
-    return params as Record<string,any>
+    return true
   };
 
   /**
@@ -256,18 +259,3 @@ export class Util {
     }
   }
 }
-
-
-
-type PostHandle<T,Param> = (state: HttpEvent<T & { params: Record<ParseParam<Param>,string> }>) => any;
-
-type ParseParam<T,U = never> = 
-  T extends `${string}:${infer R}/${infer S}` ? ParseParam<S,U | R> : 
-  T extends `${string}:${infer R}/` ? U | R :
-  T extends `${string}:${infer R}` ? U | R :
-U;
-
-
-
-
-

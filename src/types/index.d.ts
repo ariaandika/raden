@@ -7,6 +7,10 @@ declare global {
     config: HttpConfig<Locals>
     locals: Locals
   }
+
+  var production: boolean
+  
+  function log<T>(val?: T, ...vals: any[]): T
 }
 
 export {}

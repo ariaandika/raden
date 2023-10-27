@@ -12,7 +12,6 @@ declare global {
 
 export function html(layout?: HTMLConfig['layout']) {
   return (event: HttpEvent) => {
-
     event.config.transform((body: any, ev: HttpEvent<{ html: HTMLConfig}>) => {
       if (typeof body == 'string') {
         return Html.postProcess(body, ev.res.headers, ev.locals.html)
@@ -37,12 +36,32 @@ export function html(layout?: HTMLConfig['layout']) {
 
 const t = new Bun.Transpiler({ loader: 'ts' })
 
-export function serveFile(urlpath: string, file: string) {
+export function serveStatic(dir = 'static') {
   return async (event: HttpEvent) => {
-    console.log('oof', event.req.url.pathname, urlpath)
-    if (event.req.url.pathname === urlpath) {
-      event.res.headers.set('content-type', Bun.file(file).type)
-      throw await t.transform(await Bun.file(file).arrayBuffer())
+    if (!event.locals.__notfound) return
+
+    let file = Bun.file(dir + event.req.path)
+
+    while (true) {
+      if (await file.exists()) {
+        let res
+        
+        if (file.name?.endsWith('.ts')) {
+          res = await t.transform(await file.arrayBuffer())
+          event.res.headers.set('content-type', 'application/javascript')
+        }
+
+        event.config.handleFound = true
+        return res ?? file
+      }
+
+      if (file.name?.endsWith('.js')) {
+        file = Bun.file(dir + event.req.path.replace(/\.js$/,'.ts'))
+        continue
+      }
+
+      break
     }
   }
 }
+

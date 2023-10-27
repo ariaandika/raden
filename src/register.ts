@@ -1,5 +1,6 @@
-global.log = function<T>(val?:T) {
-  console.log(val)
+// @ts-ignore
+global.log = function<T>(val?:T, ...vals: any[]) {
+  console.log(val,...vals)
   return val
 }
 
